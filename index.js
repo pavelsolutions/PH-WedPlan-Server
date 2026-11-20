@@ -28,14 +28,15 @@ export async function connectToMongoDB() {
 }
 
 const connectedClient = await connectToMongoDB();
-const database = connectedClient.db("hireloopdb");
-const users = database.collection("user");
-const jobs = database.collection("jobs");
-const applications = database.collection("applications");
+const database = connectedClient.db("phWedPlanDB");
+const users = database.collection("users");
+const services = database.collection("services");
+const bookings = database.collection("bookings");
+const transactions = database.collection("transactions");
 
 
 app.get('/', (req, res) => {
-    res.send('Hire loop is looping!');
+    res.send('WedPlan is looping!');
 });
 
 app.get('/users', async (req, res) => {
@@ -212,5 +213,5 @@ app.delete("/jobs/:id", async (req, res) => {
 });
 
 app.listen(port, () => {
-    console.log(`Hire loop app listening on port ${port}`);
+    console.log(`WedPlan app listening on port ${port}`);
 });
