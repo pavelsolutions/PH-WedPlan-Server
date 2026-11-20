@@ -45,30 +45,140 @@ app.get('/users', async (req, res) => {
     res.send(result);
 })
 
-//jobs related apis
-app.post('/jobs', async (req, res) => {
-    const job = req.body;
-    const result = await jobs.insertOne(job);
-    res.send(result);
-})
-
-// app.get('/jobs', async(req, res) => {
-
-//     const query = {};
-//     console.log('query', req.query);
-//     if(req.query){
-//         if(req.query.jobType){
-//             query.jobType = req.query.jobType;
-//         }
-//         if(req.query.isRemote){
-//             query.isRemote = req.query.isRemote === 'true'
-//         }
-//     }
-
-//     const jobsData = jobs.find(query);
-//     const result = await jobsData.toArray();
+//services related apis
+// First Approach
+// app.post('/services', async (req, res) => {
+//     const job = req.body;
+//     const result = await services.insertOne(job);
 //     res.send(result);
 // })
+
+// app.post("/services", async (req, res) => {
+//   try {
+//     const service = req.body;
+//     const result = await services.insertOne(service);
+
+//     res.status(201).send({
+//       success: true,
+//       message: "Service added successfully",
+//       insertedId: result.insertedId,
+//     });
+//   } catch (error) {
+//     console.error("Add service error:", error);
+
+//     res.status(500).send({
+//       success: false,
+//       message: "Failed to add service",
+//     });
+//   }
+// });
+
+app.post("/services", async (req, res) => {
+    try {
+        const serviceData = req.body;
+
+        const newService = {
+            ...serviceData,
+            // vendorId: req.user.uid, // Authentication middleware থেকে
+            status: "Pending",
+            createdAt: new Date(),
+            updatedAt: new Date(),
+        };
+
+        const result = await services.insertOne(newService);
+
+        console.log("Inserted successfully:", result.insertedId);
+
+        return res.status(201).json({
+            success: true,
+            message: "Service created successfully",
+            data: {
+                insertedId: result.insertedId,
+            },
+        });
+    } catch (error) {
+        console.error("POST /services ERROR:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Failed to create service",
+        });
+    }
+});
+
+// app.post("/services", async (req, res) => {
+//   try {
+//     const service = req.body;
+
+//     const {
+//       serviceName,
+//       category,
+//       description,
+//       price,
+//       location,
+//       image,
+//     } = service;
+
+//     // Validate
+//     if (
+//       !serviceName ||
+//       !category ||
+//       !description ||
+//       !price ||
+//       !location ||
+//       !image
+//     ) {
+//       return res.status(400).send({
+//         success: false,
+//         message: "All fields are required",
+//       });
+//     }
+
+//     const newService = {
+//       serviceName,
+//       category,
+//       description,
+//       price: Number(price),
+//       location,
+//       image,
+//       status: "Pending",
+//       createdAt: new Date(),
+//     };
+
+//     const result = await services.insertOne(newService);
+
+//     res.status(201).send({
+//       success: true,
+//       message: "Service added successfully",
+//       insertedId: result.insertedId,
+//     });
+//   } catch (error) {
+//     console.error("Add Service Error:", error);
+
+//     res.status(500).send({
+//       success: false,
+//       message: "Failed to add service",
+//     });
+//   }
+// });
+
+app.get('/jobs', async (req, res) => {
+
+    const query = {};
+    console.log('query', req.query);
+    if (req.query) {
+        if (req.query.jobType) {
+            query.jobType = req.query.jobType;
+        }
+        if (req.query.isRemote) {
+            query.isRemote = req.query.isRemote === 'true'
+        }
+    }
+
+    const jobsData = jobs.find(query);
+    const result = await jobsData.toArray();
+    res.send(result);
+})
 
 
 
@@ -172,10 +282,10 @@ app.post("/applications", async (req, res) => {
 
 app.get('/applications/count', async (req, res) => {
     const query = {}
-    if(req.query.applicantId){
+    if (req.query.applicantId) {
         query.userId = req.query.applicantId
     }
-    
+
     const result = await applications.countDocuments(query);
     res.send(result);
 })
