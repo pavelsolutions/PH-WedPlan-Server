@@ -12,7 +12,15 @@ const port = process.env.PORT || 5000;
 
 // middleware
 app.use(express.json());
-app.use(cors());
+// app.use(cors());
+app.use(
+    cors({
+        origin: "http://localhost:3000",
+        credentials: true,
+        methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allowedHeaders: ["Content-Type", "Authorization"],
+    })
+);
 
 
 const client = new MongoClient(`mongodb://${process.env.DB_USER}:${process.env.DB_PASSWORD}@ac-gzaii2b-shard-00-00.lmhje2l.mongodb.net:27017,ac-gzaii2b-shard-00-01.lmhje2l.mongodb.net:27017,ac-gzaii2b-shard-00-02.lmhje2l.mongodb.net:27017/?ssl=true&replicaSet=atlas-mherdt-shard-0&authSource=admin`);
@@ -29,7 +37,7 @@ export async function connectToMongoDB() {
 
 const connectedClient = await connectToMongoDB();
 const database = connectedClient.db("phWedPlanDB");
-const users = database.collection("users");
+const users = database.collection("user");
 const services = database.collection("services");
 const bookings = database.collection("bookings");
 const transactions = database.collection("transactions");
@@ -45,8 +53,193 @@ app.get('/users', async (req, res) => {
     res.send(result);
 })
 
+// get user profile
+// app.get("/users/:id", async (req, res) => {
+//   try {
+//     const userId = req.params.id;
+
+//     console.log("Requested User ID:", userId);
+
+//     // Search by Better Auth id or MongoDB _id
+//     const conditions = [
+//       { id: userId },
+//     ];
+
+//     if (ObjectId.isValid(userId)) {
+//       conditions.push({
+//         _id: new ObjectId(userId),
+//       });
+//     }
+
+//     const user = await users.findOne(
+//       { $or: conditions },
+//       {
+//         projection: {
+//           name: 1,
+//           email: 1,
+//           image: 1,
+//           role: 1,
+//           isBlocked: 1,
+//           businessName: 1,
+//           subscriptionPlan: 1,
+//           subscriptionExpiresAt: 1,
+//         },
+//       }
+//     );
+
+//     console.log("Found User:", user);
+
+//     if (!user) {
+//       return res.status(404).json({
+//         success: false,
+//         message: "User not found",
+//       });
+//     }
+
+//     return res.status(200).json({
+//       success: true,
+//       data: {
+//         id: user.id || user._id.toString(),
+//         name: user.name || "",
+//         email: user.email || "",
+//         image: user.image || null,
+//         role: user.role || "user",
+//         isBlocked: user.isBlocked ?? false,
+//         businessName: user.businessName || "",
+//         subscriptionPlan: user.subscriptionPlan || "Free",
+//         subscriptionExpiresAt:
+//           user.subscriptionExpiresAt || null,
+//       },
+//     });
+
+//   } catch (error) {
+//     console.error("Profile fetch error:", error);
+
+//     return res.status(500).json({
+//       success: false,
+//       message: "Failed to fetch profile",
+//     });
+//   }
+// });
+
+// GET USER PROFILE
+app.get("/users/:id", async (req, res) => {
+  try {
+    const userId = req.params.id;
+
+    const conditions = [{ id: userId }];
+
+    if (ObjectId.isValid(userId)) {
+      conditions.push({
+        _id: new ObjectId(userId),
+      });
+    }
+
+    const user = await users.findOne(
+      { $or: conditions },
+      {
+        projection: {
+          name: 1,
+          email: 1,
+          image: 1,
+          role: 1,
+          isBlocked: 1,
+          businessName: 1,
+          phone: 1,
+          city: 1,
+          bio: 1,
+          subscriptionPlan: 1,
+          subscriptionExpiresAt: 1,
+        },
+      }
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        ...user,
+        id: user.id || user._id.toString(),
+      },
+    });
+  } catch (error) {
+    console.error("GET profile error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch profile",
+    });
+  }
+});
+
+// UPDATE USER PROFILE
+app.patch("/users/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const {
+      name,
+      businessName,
+      phone,
+      city,
+      bio,
+      image,
+    } = req.body;
+
+    const updateData = {
+      name,
+      businessName,
+      phone,
+      city,
+      bio,
+    };
+
+    // image পাঠানো হলে তবেই update হবে
+    if (image !== undefined) {
+      updateData.image = image;
+    }
+
+    const result = await users.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: updateData,
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    const updatedUser = await users.findOne({
+      _id: new ObjectId(id),
+    });
+
+    res.send({
+      success: true,
+      message: "Profile updated successfully",
+      data: updatedUser,
+    });
+  } catch (error) {
+    console.error("Update user error:", error);
+
+    res.status(500).send({
+      success: false,
+      message: "Failed to update profile",
+    });
+  }
+});
+
 //services related apis
-// First Approach
+
 // app.post('/services', async (req, res) => {
 //     const job = req.body;
 //     const result = await services.insertOne(job);
@@ -106,120 +299,85 @@ app.post("/services", async (req, res) => {
     }
 });
 
-// app.post("/services", async (req, res) => {
-//   try {
-//     const service = req.body;
+// app.get('/services', async (req, res) => {
+//     const cursor = services.find({});
+//     const result = await cursor.toArray();
+//     res.send(result);
+// })
 
-//     const {
-//       serviceName,
-//       category,
-//       description,
-//       price,
-//       location,
-//       image,
-//     } = service;
+app.get("/services", async (req, res) => {
+  try {
+    const { vendorId } = req.query;
 
-//     // Validate
-//     if (
-//       !serviceName ||
-//       !category ||
-//       !description ||
-//       !price ||
-//       !location ||
-//       !image
-//     ) {
-//       return res.status(400).send({
-//         success: false,
-//         message: "All fields are required",
-//       });
-//     }
-
-//     const newService = {
-//       serviceName,
-//       category,
-//       description,
-//       price: Number(price),
-//       location,
-//       image,
-//       status: "Pending",
-//       createdAt: new Date(),
-//     };
-
-//     const result = await services.insertOne(newService);
-
-//     res.status(201).send({
-//       success: true,
-//       message: "Service added successfully",
-//       insertedId: result.insertedId,
-//     });
-//   } catch (error) {
-//     console.error("Add Service Error:", error);
-
-//     res.status(500).send({
-//       success: false,
-//       message: "Failed to add service",
-//     });
-//   }
-// });
-
-app.get('/jobs', async (req, res) => {
-
-    const query = {};
-    console.log('query', req.query);
-    if (req.query) {
-        if (req.query.jobType) {
-            query.jobType = req.query.jobType;
-        }
-        if (req.query.isRemote) {
-            query.isRemote = req.query.isRemote === 'true'
-        }
+    if (!vendorId) {
+      return res.status(400).json({
+        success: false,
+        message: "vendorId is required",
+      });
     }
 
-    const jobsData = jobs.find(query);
-    const result = await jobsData.toArray();
-    res.send(result);
-})
+    const result = await services
+      .find({ vendorId })
+      .sort({ createdAt: -1 })
+      .toArray();
 
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("Get services error:", error);
 
-
-
-app.get("/jobs", async (req, res) => {
-    try {
-        const query = {};
-
-        const { jobType, isRemote, search } = req.query;
-
-        // Filter by job type
-        if (jobType) {
-            query.jobType = {
-                $regex: `^${jobType}$`,
-                $options: "i",
-            };
-        }
-
-        // Filter by remote status
-        if (isRemote !== undefined) {
-            query.isRemote = isRemote === "true";
-        }
-
-        // Search by title, responsibilities, and requirements
-        if (search) {
-            query.$or = [
-                { jobTitle: { $regex: search, $options: "i" } },
-                { companyName: { $regex: search, $options: "i" } },
-                { responsibilities: { $regex: search, $options: "i" } },
-                { requirements: { $regex: search, $options: "i" } },
-            ];
-        }
-
-        const result = await jobs.find(query).toArray();
-
-        res.send(result);
-    } catch (error) {
-        res.status(500).send({ message: "Failed to fetch jobs" });
-    }
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch services",
+    });
+  }
 });
 
+// app.delete('/services/:id', async (req, res) => {
+//     const id = req.params.id;
+
+//     const result = await services.deleteOne({
+//         _id: new ObjectId(id)
+//     });
+
+//     res.send(result);
+// });
+
+app.delete("/services/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid service ID",
+            });
+        }
+
+        const result = await services.deleteOne({
+            _id: new ObjectId(id),
+        });
+
+        if (result.deletedCount === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Service not found",
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: "Service deleted successfully",
+        });
+
+    } catch (error) {
+        console.error("Delete service error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Failed to delete service",
+        });
+    }
+});
 // GET /jobs/:id — single job for the details page
 app.get("/jobs/:id", async (req, res) => {
     try {
