@@ -22,14 +22,8 @@ app.use(
     })
 );
 
-
 const client = new MongoClient(`mongodb://${process.env.DB_USER}:${process.env.DB_PASSWORD}@ac-gzaii2b-shard-00-00.lmhje2l.mongodb.net:27017,ac-gzaii2b-shard-00-01.lmhje2l.mongodb.net:27017,ac-gzaii2b-shard-00-02.lmhje2l.mongodb.net:27017/?ssl=true&replicaSet=atlas-mherdt-shard-0&authSource=admin`);
 
-
-const myLogger = (req, res, next) => {
-    console.log('now hitting api', req.url, req.query)
-    next();
-}
 export async function connectToMongoDB() {
     try {
         await client.connect();
@@ -44,10 +38,9 @@ const connectedClient = await connectToMongoDB();
 const database = connectedClient.db("phWedPlanDB");
 const users = database.collection("user");
 const services = database.collection("services");
-const sessions = database.collection("session");
 const bookings = database.collection("bookings");
 const payments = database.collection("payments");
-const transactions = database.collection("transactions");
+const transactions = database.collection("payments");
 
 // const verifyToken = async (req, res, next) => {
 //   const authHeader = req.headers.authorization;
@@ -140,75 +133,6 @@ app.get('/users/:id/premium', async (req, res) => {
     const result = await users.findOne(query);
     res.send(result);
 })
-
-// get user profile
-// app.get("/users/:id", async (req, res) => {
-//   try {
-//     const userId = req.params.id;
-
-//     console.log("Requested User ID:", userId);
-
-//     // Search by Better Auth id or MongoDB _id
-//     const conditions = [
-//       { id: userId },
-//     ];
-
-//     if (ObjectId.isValid(userId)) {
-//       conditions.push({
-//         _id: new ObjectId(userId),
-//       });
-//     }
-
-//     const user = await users.findOne(
-//       { $or: conditions },
-//       {
-//         projection: {
-//           name: 1,
-//           email: 1,
-//           image: 1,
-//           role: 1,
-//           isBlocked: 1,
-//           businessName: 1,
-//           subscriptionPlan: 1,
-//           subscriptionExpiresAt: 1,
-//         },
-//       }
-//     );
-
-//     console.log("Found User:", user);
-
-//     if (!user) {
-//       return res.status(404).json({
-//         success: false,
-//         message: "User not found",
-//       });
-//     }
-
-//     return res.status(200).json({
-//       success: true,
-//       data: {
-//         id: user.id || user._id.toString(),
-//         name: user.name || "",
-//         email: user.email || "",
-//         image: user.image || null,
-//         role: user.role || "user",
-//         isBlocked: user.isBlocked ?? false,
-//         businessName: user.businessName || "",
-//         subscriptionPlan: user.subscriptionPlan || "Free",
-//         subscriptionExpiresAt:
-//           user.subscriptionExpiresAt || null,
-//       },
-//     });
-
-//   } catch (error) {
-//     console.error("Profile fetch error:", error);
-
-//     return res.status(500).json({
-//       success: false,
-//       message: "Failed to fetch profile",
-//     });
-//   }
-// });
 
 // get user profile
 app.get("/users/:id", async (req, res) => {
@@ -486,6 +410,309 @@ app.get("/services", async (req, res) => {
 });
 
 
+
+app.get("/services/all", async (req, res) => {
+    try {
+        const {
+            search,
+            category,
+            location,
+            sort = "newest",
+            minBudget,
+            maxBudget,
+            rating,
+            verified,
+            featured,
+        } = req.query;
+
+        // Escape regex special characters
+        const escapeRegex = (value) =>
+            String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+        // Initial filter: only approved services
+        const filter = {
+            status: { $regex: /^approved$/i },
+        };
+
+        // Category filter
+        if (category && category !== "all") {
+            filter.category = {
+                $regex: `^${escapeRegex(category)}$`,
+                $options: "i",
+            };
+        }
+
+        // Location filter
+        if (location?.trim()) {
+            filter.location = {
+                $regex: escapeRegex(location.trim()),
+                $options: "i",
+            };
+        }
+
+        const pipeline = [
+            {
+                $match: filter,
+            },
+
+            // Get vendor information
+            {
+                $lookup: {
+                    from: "user", // Your actual MongoDB collection name
+                    let: {
+                        vendorId: "$vendorId",
+                    },
+                    pipeline: [
+                        {
+                            $match: {
+                                $expr: {
+                                    $eq: [
+                                        { $toString: "$_id" },
+                                        { $toString: "$$vendorId" },
+                                    ],
+                                },
+                            },
+                        },
+                        {
+                            $project: {
+                                name: 1,
+                                fullName: 1,
+                                email: 1,
+                                role: 1,
+                                image: 1,
+                                isVerified: 1,
+                                verified: 1,
+                            },
+                        },
+                    ],
+                    as: "vendor",
+                },
+            },
+
+            {
+                $unwind: {
+                    path: "$vendor",
+                    preserveNullAndEmptyArrays: true,
+                },
+            },
+
+            // Normalize values
+            {
+                $addFields: {
+                    vendorIsVerified: {
+                        $ifNull: [
+                            "$vendor.isVerified",
+                            { $ifNull: ["$vendor.verified", false] },
+                        ],
+                    },
+
+                    serviceRating: {
+                        $convert: {
+                            input: {
+                                $ifNull: ["$rating", "$averageRating"],
+                            },
+                            to: "double",
+                            onError: 0,
+                            onNull: 0,
+                        },
+                    },
+
+                    servicePrice: {
+                        $convert: {
+                            input: "$price",
+                            to: "double",
+                            onError: 0,
+                            onNull: 0,
+                        },
+                    },
+
+                    isFeatured: {
+                        $ifNull: ["$isFeatured", false],
+                    },
+                },
+            },
+        ];
+
+        // Keyword search
+        if (search?.trim()) {
+            const searchRegex = new RegExp(
+                escapeRegex(search.trim()),
+                "i"
+            );
+
+            pipeline.push({
+                $match: {
+                    $or: [
+                        { serviceName: searchRegex },
+                        { title: searchRegex },
+                        { description: searchRegex },
+                        { category: searchRegex },
+                        { location: searchRegex },
+                        { "vendor.name": searchRegex },
+                        { "vendor.fullName": searchRegex },
+                    ],
+                },
+            });
+        }
+
+        // Minimum budget
+        if (minBudget !== undefined && minBudget !== "") {
+            const min = Number(minBudget);
+
+            if (Number.isFinite(min)) {
+                pipeline.push({
+                    $match: {
+                        servicePrice: { $gte: min },
+                    },
+                });
+            }
+        }
+
+        // Maximum budget
+        if (maxBudget !== undefined && maxBudget !== "") {
+            const max = Number(maxBudget);
+
+            if (Number.isFinite(max)) {
+                pipeline.push({
+                    $match: {
+                        servicePrice: { $lte: max },
+                    },
+                });
+            }
+        }
+
+        // Rating filter
+        if (rating && rating !== "all") {
+            const minRating = Number(rating);
+
+            if (Number.isFinite(minRating)) {
+                pipeline.push({
+                    $match: {
+                        serviceRating: { $gte: minRating },
+                    },
+                });
+            }
+        }
+
+        // Verified vendor filter
+        if (verified === "true") {
+            pipeline.push({
+                $match: {
+                    vendorIsVerified: true,
+                },
+            });
+        }
+
+        // Featured service filter
+        if (featured === "true") {
+            pipeline.push({
+                $match: {
+                    isFeatured: true,
+                },
+            });
+        }
+
+        // Sorting
+        let sortOption = { createdAt: -1 };
+
+        switch (sort) {
+            case "price-low":
+                sortOption = { servicePrice: 1 };
+                break;
+
+            case "price-high":
+                sortOption = { servicePrice: -1 };
+                break;
+
+            case "rating":
+                sortOption = { serviceRating: -1 };
+                break;
+
+            case "featured":
+                sortOption = {
+                    isFeatured: -1,
+                    createdAt: -1,
+                };
+                break;
+
+            case "newest":
+            default:
+                sortOption = { createdAt: -1 };
+                break;
+        }
+
+        // Pagination result and total count
+        pipeline.push({
+            $facet: {
+                services: [
+                    {
+                        $sort: sortOption,
+                    },
+                    {
+                        $project: {
+                            _id: 1,
+                            serviceName: 1,
+                            category: 1,
+                            description: 1,
+                            price: 1,
+                            location: 1,
+                            image: 1,
+                            images: 1,
+                            imageUrl: 1,
+                            vendorId: 1,
+                            vendor: {
+                                name: 1,
+                                fullName: 1,
+                                email: 1,
+                                image: 1,
+                            },
+                            vendorIsVerified: 1,
+                            serviceRating: 1,
+                            isFeatured: 1,
+                            status: 1,
+                            createdAt: 1,
+                            updatedAt: 1,
+                        },
+                    },
+                ],
+
+                totalCount: [
+                    {
+                        $count: "total",
+                    },
+                ],
+            },
+        });
+
+        // IMPORTANT: Use services, not servicesCollection
+        const result = await services
+            .aggregate(pipeline)
+            .toArray();
+
+        const serviceList = result[0]?.services || [];
+        const total = result[0]?.totalCount[0]?.total || 0;
+
+        console.log("All services fetched:", total);
+
+        return res.status(200).json({
+            success: true,
+            total,
+            services: serviceList,
+        });
+
+    } catch (error) {
+        console.error("GET /services/all ERROR:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Failed to fetch services",
+            error: error.message,
+        });
+    }
+});
+
+
+
 // app.post("/services", async (req, res) => {
 //   try {
 //     const service = req.body;
@@ -658,138 +885,6 @@ app.get("/vendor/services/count/:vendorId", async (req, res) => {
         });
     }
 });
-
-
-// app.post("/services", async (req, res) => {
-//     try {
-//         // 1. Verify Better Auth session
-//         const session = await auth.api.getSession({
-//             headers: fromNodeHeaders(req.headers),
-//         });
-
-//         if (!session?.user) {
-//             return res.status(401).send({
-//                 message: "Please login first.",
-//             });
-//         }
-
-//         // 2. Find authenticated vendor
-//         const vendor = await users.findOne({
-//             email: session.user.email,
-//         });
-
-//         if (!vendor) {
-//             return res.status(404).send({
-//                 message: "User not found.",
-//             });
-//         }
-
-//         // 3. Verify vendor role
-//         if (vendor.role?.toLowerCase() !== "vendor") {
-//             return res.status(403).send({
-//                 message: "Only vendors can publish services.",
-//             });
-//         }
-
-//         // 4. Check blocked account
-//         if (vendor.isBlocked === true) {
-//             return res.status(403).send({
-//                 message: "Your account has been blocked.",
-//             });
-//         }
-
-//         // 5. Get service information
-//         const {
-//             serviceName,
-//             category,
-//             description,
-//             price,
-//             location,
-//             image,
-//         } = req.body;
-
-//         // 6. Validate required fields
-//         if (
-//             typeof serviceName !== "string" ||
-//             !serviceName.trim() ||
-//             typeof category !== "string" ||
-//             !category.trim() ||
-//             typeof description !== "string" ||
-//             !description.trim() ||
-//             typeof location !== "string" ||
-//             !location.trim() ||
-//             typeof image !== "string" ||
-//             !image.trim() ||
-//             price === "" ||
-//             price === null ||
-//             price === undefined ||
-//             !Number.isFinite(Number(price)) ||
-//             Number(price) <= 0
-//         ) {
-//             return res.status(400).send({
-//                 message: "Please provide all required service information.",
-//             });
-//         }
-
-//         // 7. Get subscription plan
-
-//         const subscriptionPlan = String(
-//             vendor.subscriptionPlan || "free"
-//         ).trim().toLowerCase();
-
-//         if (subscriptionPlan === "free") {
-//             const vendorServiceCount = await services.countDocuments({
-//                 vendorId: session.user.id,
-//             });
-
-//             if (vendorServiceCount >= 3) {
-//                 return res.status(403).send({
-//                     success: false,
-//                     code: "SERVICE_LIMIT_REACHED",
-//                     message:
-//                         "You have already submitted 3 services. Upgrade to Premium to publish unlimited services.",
-//                 });
-//             }
-//         }
-
-
-//         // 9. Prepare service data
-//         const newService = {
-//             serviceName: serviceName.trim(),
-//             category: category.trim(),
-//             description: description.trim(),
-//             price: Number(price),
-//             location: location.trim(),
-//             image: image.trim(),
-
-//             vendorId: session.user.id,
-
-//             // Always Pending until admin approval
-//             status: "Pending",
-
-//             createdAt: new Date(),
-//             updatedAt: new Date(),
-//         };
-
-//         // 10. Insert service
-//         const result = await services.insertOne(newService);
-
-//         return res.status(201).send({
-//             success: true,
-//             message: "Service submitted successfully. Waiting for admin approval.",
-//             insertedId: result.insertedId,
-//         });
-
-//     } catch (error) {
-//         console.error("POST /services ERROR:", error);
-
-//         return res.status(500).send({
-//             success: false,
-//             message: "Failed to create service.",
-//         });
-//     }
-// });
-
 
 
 // get single service by ID
@@ -1010,96 +1105,6 @@ app.delete("/services/:id", async (req, res) => {
 });
 
 
-// app.get("/services", async (req, res) => {
-//   try {
-//     const { search, category, location, sort } = req.query;
-
-//     const query = {
-//       $expr: {
-//         $eq: [
-//           { $toUpper: { $ifNull: ["$status", ""] } },
-//           "APPROVED",
-//         ],
-//       },
-//     };
-
-//     // Search
-//     if (search) {
-//       const escapedSearch = String(search).replace(
-//         /[.*+?^${}()|[\]\\]/g,
-//         "\\$&"
-//       );
-
-//       const regex = new RegExp(escapedSearch, "i");
-
-//       query.$or = [
-//         { serviceName: regex },
-//         { description: regex },
-//         { category: regex },
-//       ];
-//     }
-
-//     // Category
-//     if (category && category !== "all") {
-//       const escapedCategory = String(category).replace(
-//         /[.*+?^${}()|[\]\\]/g,
-//         "\\$&"
-//       );
-
-//       query.category = {
-//         $regex: `^${escapedCategory}$`,
-//         $options: "i",
-//       };
-//     }
-
-//     // Location
-//     if (location) {
-//       const escapedLocation = String(location).replace(
-//         /[.*+?^${}()|[\]\\]/g,
-//         "\\$&"
-//       );
-
-//       query.location = {
-//         $regex: escapedLocation,
-//         $options: "i",
-//       };
-//     }
-
-//     // Sorting
-//     let sortOption = { createdAt: -1 };
-
-//     if (sort === "price-low") {
-//       sortOption = { price: 1 };
-//     } else if (sort === "price-high") {
-//       sortOption = { price: -1 };
-//     }
-
-//     const services = await servicesCollection
-//       .find(query)
-//       .sort(sortOption)
-//       .toArray();
-
-//     res.status(200).send({
-//       success: true,
-//       total: services.length,
-//       services,
-//     });
-
-//   } catch (error) {
-//     console.error("Get services error:", error);
-
-//     res.status(500).send({
-//       success: false,
-//       message: "Failed to fetch services",
-//     });
-//   }
-// });
-
-
-
-// For Booking API
-
-
 app.post("/bookings", async (req, res) => {
     try {
         const {
@@ -1110,24 +1115,91 @@ app.post("/bookings", async (req, res) => {
             message,
         } = req.body;
 
-        if (!customerId || !serviceId || !eventDate || !eventLocation) {
+        // 1. Required field validation
+        if (
+            !customerId ||
+            !serviceId ||
+            !eventDate ||
+            !eventLocation?.trim()
+        ) {
             return res.status(400).json({
                 success: false,
                 message: "Required fields are missing",
             });
         }
 
-        const newBooking = {
-            customerId,
-            serviceId,
+        // 2. Normalize values
+        const normalizedCustomerId = String(customerId).trim();
+        const normalizedServiceId = String(serviceId).trim();
+        const normalizedEventLocation = eventLocation.trim();
+
+        // 3. Validate event date format
+        const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+
+        if (
+            typeof eventDate !== "string" ||
+            !datePattern.test(eventDate)
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid event date format. Use YYYY-MM-DD.",
+            });
+        }
+
+        // 4. Validate actual calendar date
+        const parsedDate = new Date(`${eventDate}T00:00:00.000Z`);
+
+        if (
+            Number.isNaN(parsedDate.getTime()) ||
+            parsedDate.toISOString().slice(0, 10) !== eventDate
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: "Please provide a valid event date",
+            });
+        }
+
+        // 5. Prevent past event dates (UTC date comparison)
+        const today = new Date().toISOString().slice(0, 10);
+
+        if (eventDate < today) {
+            return res.status(400).json({
+                success: false,
+                message: "Event date cannot be in the past",
+            });
+        }
+
+        // 6. Check existing booking
+        const existingBooking = await bookings.findOne({
+            customerId: normalizedCustomerId,
+            serviceId: normalizedServiceId,
             eventDate,
-            eventLocation,
-            message,
+        });
+
+        if (existingBooking) {
+            return res.status(409).json({
+                success: false,
+                message:
+                    "You have already booked this service for this date.",
+            });
+        }
+
+        // 7. Create new booking
+        const newBooking = {
+            customerId: normalizedCustomerId,
+            serviceId: normalizedServiceId,
+            eventDate,
+            eventLocation: normalizedEventLocation,
+            message:
+                typeof message === "string"
+                    ? message.trim()
+                    : "",
             status: "Pending",
             createdAt: new Date(),
             updatedAt: new Date(),
         };
 
+        // 8. Insert booking
         const result = await bookings.insertOne(newBooking);
 
         return res.status(201).json({
@@ -1137,8 +1209,18 @@ app.post("/bookings", async (req, res) => {
                 insertedId: result.insertedId,
             },
         });
+
     } catch (error) {
         console.error("POST /bookings ERROR:", error);
+
+        // 9. Handle MongoDB duplicate key error
+        if (error.code === 11000) {
+            return res.status(409).json({
+                success: false,
+                message:
+                    "You have already booked this service for this date.",
+            });
+        }
 
         return res.status(500).json({
             success: false,
@@ -1146,7 +1228,6 @@ app.post("/bookings", async (req, res) => {
         });
     }
 });
-
 
 
 app.get('/customer/bookings', async (req, res) => {
@@ -1411,6 +1492,7 @@ app.get("/customer/bookings/:customerId", async (req, res) => {
         });
     }
 });
+
 
 
 
@@ -1924,6 +2006,34 @@ app.post("/payments/checkout-verify", async (req, res) => {
   }
 });
 
+
+app.get("/admin/transactions", async (req, res) => {
+  try {
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit) || 5, 1),
+      100
+    );
+
+    const result = await transactions
+      .find({})
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .toArray();
+
+    res.status(200).json({
+      success: true,
+      message: "Transactions fetched successfully",
+      data: result,
+    });
+  } catch (error) {
+    console.error("Transaction Fetch Error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch transactions",
+    });
+  }
+});
 app.listen(port, () => {
     console.log(`WedPlan app listening on port ${port}`);
 });
