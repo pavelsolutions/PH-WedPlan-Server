@@ -67,7 +67,7 @@ const transactions = database.collection("payments");
 //   }
 
 //   const userId = session.userId
-  
+
 //   const userQuery = {_id: new ObjectId(userId)};
 //   const user = await users.findOne(userQuery);
 //   if(!user) {
@@ -191,10 +191,24 @@ app.get("/users/:id", async (req, res) => {
 });
 
 // update user profile
+
 app.patch("/users/:id", async (req, res) => {
     try {
         const { id } = req.params;
 
+        // Support both Better Auth ID and MongoDB ObjectId
+        const conditions = [
+            { id: id },
+            { _id: id },
+        ];
+
+        if (ObjectId.isValid(id)) {
+            conditions.push({
+                _id: new ObjectId(id),
+            });
+        }
+
+        // Only update fields sent by frontend
         const {
             name,
             businessName,
@@ -205,50 +219,49 @@ app.patch("/users/:id", async (req, res) => {
         } = req.body;
 
         const updateData = {
-            name,
-            businessName,
-            phone,
-            city,
-            bio,
+            updatedAt: new Date(),
         };
 
-        // image পাঠানো হলে তবেই update হবে
-        if (image !== undefined) {
-            updateData.image = image;
-        }
+        if (name !== undefined) updateData.name = name;
+        if (businessName !== undefined) updateData.businessName = businessName;
+        if (phone !== undefined) updateData.phone = phone;
+        if (city !== undefined) updateData.city = city;
+        if (bio !== undefined) updateData.bio = bio;
+        if (image !== undefined) updateData.image = image;
 
         const result = await users.updateOne(
-            { _id: new ObjectId(id) },
+            { $or: conditions },
             {
                 $set: updateData,
             }
         );
 
         if (result.matchedCount === 0) {
-            return res.status(404).send({
+            return res.status(404).json({
                 success: false,
                 message: "User not found",
             });
         }
-
         const updatedUser = await users.findOne({
             _id: new ObjectId(id),
         });
 
-        res.send({
+        return res.status(200).json({
             success: true,
             message: "Profile updated successfully",
             data: updatedUser,
         });
+
     } catch (error) {
         console.error("Update user error:", error);
 
-        res.status(500).send({
+        return res.status(500).json({
             success: false,
-            message: "Failed to update profile",
+            message: error.message || "Failed to update profile",
         });
     }
 });
+
 
 app.get("/admin/users", async (req, res) => {
     try {
@@ -1847,192 +1860,192 @@ app.get("/admin/dashboard/stats", async (req, res) => {
 // })
 
 app.post("/payments/checkout-verify", async (req, res) => {
-  try {
-    // 1. Get session ID from frontend
-    const { sessionId } = req.body;
+    try {
+        // 1. Get session ID from frontend
+        const { sessionId } = req.body;
 
-    if (!sessionId) {
-      return res.status(400).send({
-        success: false,
-        message: "Session ID is required",
-      });
+        if (!sessionId) {
+            return res.status(400).send({
+                success: false,
+                message: "Session ID is required",
+            });
+        }
+
+        // 2. Retrieve session from Stripe
+        const checkoutSession =
+            await stripe.checkout.sessions.retrieve(sessionId);
+
+        const {
+            status,
+            payment_status,
+            customer_email,
+            metadata,
+            payment_intent,
+        } = checkoutSession;
+
+        // 3. Verify payment status
+        if (status !== "complete" || payment_status !== "paid") {
+            return res.status(400).send({
+                success: false,
+                message: "Payment verification failed",
+            });
+        }
+
+        // 4. Get vendor ID from Stripe metadata
+        const vendorId = metadata?.vendorId;
+
+        if (!vendorId) {
+            return res.status(400).send({
+                success: false,
+                message: "Vendor ID missing from Stripe metadata",
+            });
+        }
+
+        // 5. Get plan from metadata
+        const plan = metadata?.plan || "premium";
+
+        // 6. Find existing payment
+        const existingPayment = await payments.findOne({
+            sessionId: checkoutSession.id,
+        });
+
+        let paymentResult = null;
+
+        // 7. Save payment only if it doesn't exist
+        if (!existingPayment) {
+            const payment = {
+                sessionId: checkoutSession.id,
+                payment_intent:
+                    typeof payment_intent === "string"
+                        ? payment_intent
+                        : payment_intent?.id || null,
+
+                userId: vendorId,
+                vendorId,
+
+                customer_email:
+                    customer_email || null,
+
+                amount:
+                    (checkoutSession.amount_total || 0) / 100,
+
+                currency:
+                    checkoutSession.currency?.toUpperCase() || "USD",
+
+                status,
+                payment_status,
+
+                plan,
+
+                payment_date: new Date(),
+
+                createdAt: new Date(),
+            };
+
+            paymentResult = await payments.insertOne(payment);
+        }
+
+        // 8. Find vendor in MongoDB
+        let userQuery;
+
+        // If vendor ID is a valid MongoDB ObjectId
+        if (ObjectId.isValid(vendorId) && String(new ObjectId(vendorId)) === vendorId) {
+            userQuery = {
+                _id: new ObjectId(vendorId),
+            };
+        } else {
+            // If vendor ID is a string
+            userQuery = {
+                $or: [
+                    { id: vendorId },
+                    { _id: vendorId },
+                ],
+            };
+        }
+
+        // 9. Update vendor subscription
+        const updateDoc = {
+            $set: {
+                subscriptionPlan: plan,
+                premiumActivatedAt: new Date(),
+                premiumPaymentId: checkoutSession.id,
+            },
+        };
+
+        const updateResult = await users.updateOne(
+            userQuery,
+            updateDoc
+        );
+
+        // 10. If vendor not found
+        if (updateResult.matchedCount === 0) {
+            console.error("Vendor not found:", vendorId);
+
+            return res.status(404).send({
+                success: false,
+                message: "Payment verified but vendor not found",
+                vendorId,
+                paymentSaved: !!existingPayment || !!paymentResult,
+            });
+        }
+
+        // 11. Send successful response
+        return res.send({
+            success: true,
+            message: "Payment verified and Premium activated successfully",
+
+            vendorId,
+
+            subscriptionPlan: plan,
+
+            payment: {
+                alreadySaved: !!existingPayment,
+                insertedId: paymentResult?.insertedId || null,
+            },
+
+            userUpdate: {
+                matchedCount: updateResult.matchedCount,
+                modifiedCount: updateResult.modifiedCount,
+            },
+        });
+    } catch (error) {
+        console.error("Checkout verification error:", error);
+
+        return res.status(500).send({
+            success: false,
+            message: "Server error during payment verification",
+            error: error.message,
+        });
     }
-
-    // 2. Retrieve session from Stripe
-    const checkoutSession =
-      await stripe.checkout.sessions.retrieve(sessionId);
-
-    const {
-      status,
-      payment_status,
-      customer_email,
-      metadata,
-      payment_intent,
-    } = checkoutSession;
-
-    // 3. Verify payment status
-    if (status !== "complete" || payment_status !== "paid") {
-      return res.status(400).send({
-        success: false,
-        message: "Payment verification failed",
-      });
-    }
-
-    // 4. Get vendor ID from Stripe metadata
-    const vendorId = metadata?.vendorId;
-
-    if (!vendorId) {
-      return res.status(400).send({
-        success: false,
-        message: "Vendor ID missing from Stripe metadata",
-      });
-    }
-
-    // 5. Get plan from metadata
-    const plan = metadata?.plan || "premium";
-
-    // 6. Find existing payment
-    const existingPayment = await payments.findOne({
-      sessionId: checkoutSession.id,
-    });
-
-    let paymentResult = null;
-
-    // 7. Save payment only if it doesn't exist
-    if (!existingPayment) {
-      const payment = {
-        sessionId: checkoutSession.id,
-        payment_intent:
-          typeof payment_intent === "string"
-            ? payment_intent
-            : payment_intent?.id || null,
-
-        userId: vendorId,
-        vendorId,
-
-        customer_email:
-          customer_email || null,
-
-        amount:
-          (checkoutSession.amount_total || 0) / 100,
-
-        currency:
-          checkoutSession.currency?.toUpperCase() || "USD",
-
-        status,
-        payment_status,
-
-        plan,
-
-        payment_date: new Date(),
-
-        createdAt: new Date(),
-      };
-
-      paymentResult = await payments.insertOne(payment);
-    }
-
-    // 8. Find vendor in MongoDB
-    let userQuery;
-
-    // If vendor ID is a valid MongoDB ObjectId
-    if (ObjectId.isValid(vendorId) && String(new ObjectId(vendorId)) === vendorId) {
-      userQuery = {
-        _id: new ObjectId(vendorId),
-      };
-    } else {
-      // If vendor ID is a string
-      userQuery = {
-        $or: [
-          { id: vendorId },
-          { _id: vendorId },
-        ],
-      };
-    }
-
-    // 9. Update vendor subscription
-    const updateDoc = {
-      $set: {
-        subscriptionPlan: plan,
-        premiumActivatedAt: new Date(),
-        premiumPaymentId: checkoutSession.id,
-      },
-    };
-
-    const updateResult = await users.updateOne(
-      userQuery,
-      updateDoc
-    );
-
-    // 10. If vendor not found
-    if (updateResult.matchedCount === 0) {
-      console.error("Vendor not found:", vendorId);
-
-      return res.status(404).send({
-        success: false,
-        message: "Payment verified but vendor not found",
-        vendorId,
-        paymentSaved: !!existingPayment || !!paymentResult,
-      });
-    }
-
-    // 11. Send successful response
-    return res.send({
-      success: true,
-      message: "Payment verified and Premium activated successfully",
-
-      vendorId,
-
-      subscriptionPlan: plan,
-
-      payment: {
-        alreadySaved: !!existingPayment,
-        insertedId: paymentResult?.insertedId || null,
-      },
-
-      userUpdate: {
-        matchedCount: updateResult.matchedCount,
-        modifiedCount: updateResult.modifiedCount,
-      },
-    });
-  } catch (error) {
-    console.error("Checkout verification error:", error);
-
-    return res.status(500).send({
-      success: false,
-      message: "Server error during payment verification",
-      error: error.message,
-    });
-  }
 });
 
 
 app.get("/admin/transactions", async (req, res) => {
-  try {
-    const limit = Math.min(
-      Math.max(parseInt(req.query.limit) || 5, 1),
-      100
-    );
+    try {
+        const limit = Math.min(
+            Math.max(parseInt(req.query.limit) || 5, 1),
+            100
+        );
 
-    const result = await transactions
-      .find({})
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .toArray();
+        const result = await transactions
+            .find({})
+            .sort({ createdAt: -1 })
+            .limit(limit)
+            .toArray();
 
-    res.status(200).json({
-      success: true,
-      message: "Transactions fetched successfully",
-      data: result,
-    });
-  } catch (error) {
-    console.error("Transaction Fetch Error:", error);
+        res.status(200).json({
+            success: true,
+            message: "Transactions fetched successfully",
+            data: result,
+        });
+    } catch (error) {
+        console.error("Transaction Fetch Error:", error);
 
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch transactions",
-    });
-  }
+        res.status(500).json({
+            success: false,
+            message: "Failed to fetch transactions",
+        });
+    }
 });
 app.listen(port, () => {
     console.log(`WedPlan app listening on port ${port}`);
