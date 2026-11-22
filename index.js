@@ -15,7 +15,7 @@ app.use(express.json());
 // app.use(cors());
 app.use(
     cors({
-        origin: process.env.FRONTEND_URL,
+        origin: process.env.FRONTEND_URL || "https://wedplan-frontend-three.vercel.app",
         credentials: true,
         methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allowedHeaders: ["Content-Type", "Authorization"],
@@ -25,6 +25,11 @@ app.use(
 
 const client = new MongoClient(`mongodb://${process.env.DB_USER}:${process.env.DB_PASSWORD}@ac-gzaii2b-shard-00-00.lmhje2l.mongodb.net:27017,ac-gzaii2b-shard-00-01.lmhje2l.mongodb.net:27017,ac-gzaii2b-shard-00-02.lmhje2l.mongodb.net:27017/?ssl=true&replicaSet=atlas-mherdt-shard-0&authSource=admin`);
 
+
+const myLogger = (req, res, next) => {
+    console.log('now hitting api', req.url, req.query)
+    next();
+}
 export async function connectToMongoDB() {
     try {
         await client.connect();
@@ -39,9 +44,84 @@ const connectedClient = await connectToMongoDB();
 const database = connectedClient.db("phWedPlanDB");
 const users = database.collection("user");
 const services = database.collection("services");
+const sessions = database.collection("session");
 const bookings = database.collection("bookings");
 const payments = database.collection("payments");
 const transactions = database.collection("transactions");
+
+// const verifyToken = async (req, res, next) => {
+//   const authHeader = req.headers.authorization;
+
+//   if (!authHeader || !authHeader.startsWith("Bearer ")) {
+//     return res.status(401).send({
+//       message: "Unauthorized",
+//     });
+//   }
+
+//   const token = authHeader.split(" ")[1];
+
+//   if (!token) {
+//     return res.status(401).send({
+//       message: "Unauthorized",
+//     });
+//   }
+
+//   const query = { token };
+//   const session  = await sessions.findOne(query);
+//   if(!session){
+//     res.status(401).send({message: 'Unauthorized'})
+//     return;
+//   }
+
+//   const userId = session.userId
+  
+//   const userQuery = {_id: new ObjectId(userId)};
+//   const user = await users.findOne(userQuery);
+//   if(!user) {
+//     res.status(401).send({ message: 'Unauthorized'}
+//     );
+
+//     return ;
+//   }
+
+//   req.user = user;
+//   next();
+// };
+
+// JWT verification
+// const JWKS = createRemoteJWKSet(
+//   new URL(`${process.env.FRONTEND_URL}/api/auth/jwks`)
+// );
+
+// const verifyToken = async (req, res, next) => {
+//   const authHeader = req.headers.authorization;
+
+//   if (!authHeader || !authHeader.startsWith("Bearer ")) {
+//     return res.status(401).send({
+//       message: "Unauthorized",
+//     });
+//   }
+
+//   const token = authHeader.split(" ")[1];
+
+//   if (!token) {
+//     return res.status(401).send({
+//       message: "Unauthorized",
+//     });
+//   }
+
+//   try {
+//     const { payload } = await jwtVerify(token, JWKS);
+
+//     req.user = payload;
+
+//     next();
+//   } catch (error) {
+//     return res.status(401).send({
+//       message: "Invalid or expired token",
+//     });
+//   }
+// };
 
 
 app.get('/', (req, res) => {
