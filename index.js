@@ -2059,7 +2059,7 @@ app.post("/payments/checkout-verify", async (req, res) => {
 });
 
 
-app.get("/admin/transactions", verifyToken, async (req, res) => {
+app.get("/admin/transactions", async (req, res) => {
     try {
         const limit = Math.min(
             Math.max(parseInt(req.query.limit) || 5, 1),
