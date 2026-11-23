@@ -3,6 +3,7 @@ import cors from "cors";
 import "dotenv/config";
 import { MongoClient, ObjectId } from 'mongodb';
 import Stripe from 'stripe';
+import { createRemoteJWKSet, jwtVerify } from 'jose';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
 
@@ -120,6 +121,152 @@ const transactions = database.collection("payments");
 app.get('/', (req, res) => {
     res.send('WedPlan is looping!');
 });
+
+// JWT verification
+const JWKS = createRemoteJWKSet(
+  new URL(`${process.env.FRONTEND_URL}/api/auth/jwks`)
+);
+
+const verifyToken = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader?.startsWith("Bearer ")) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized access",
+      });
+    }
+
+    const token = authHeader.split(" ")[1];
+
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: "Token is required",
+      });
+    }
+
+    const { payload } = await jwtVerify(token, JWKS);
+
+    req.user = payload;
+
+    next();
+  } catch (error) {
+    console.error("JWT verification error:", error.message);
+
+    return res.status(401).json({
+      success: false,
+      message: "Invalid or expired token",
+    });
+  }
+};
+
+const verifyRole = (users, ...allowedRoles) => {
+  return async (req, res, next) => {
+    try {
+      if (!req.user?.sub) {
+        return res.status(401).json({
+          success: false,
+          message: "Unauthorized access",
+        });
+      }
+
+      const user = await users.findOne(
+        { id: req.user.sub },
+        { projection: { role: 1, isBlocked: 1 } }
+      );
+
+      if (!user || user.isBlocked) {
+        return res.status(403).json({
+          success: false,
+          message: "Account not found or blocked",
+        });
+      }
+
+      if (!allowedRoles.includes(user.role)) {
+        return res.status(403).json({
+          success: false,
+          message: "Forbidden! You don't have permission.",
+        });
+      }
+
+      req.currentUser = user;
+      next();
+
+    } catch (error) {
+      console.error("Role verification error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Role verification failed",
+      });
+    }
+  };
+};
+
+const verifyOwnerOrAdmin = (users) => {
+  return async (req, res, next) => {
+    try {
+      const currentUser = await users.findOne(
+        { id: req.user.sub },
+        { projection: { id: 1, role: 1, isBlocked: 1 } }
+      );
+
+      if (!currentUser || currentUser.isBlocked) {
+        return res.status(403).json({
+          success: false,
+          message: "Account not found or blocked",
+        });
+      }
+
+      const targetId = req.params.id;
+
+      const conditions = [{ id: targetId }];
+
+      if (ObjectId.isValid(targetId)) {
+        conditions.push({ _id: new ObjectId(targetId) });
+      }
+
+      const targetUser = await users.findOne(
+        { $or: conditions },
+        { projection: { id: 1 } }
+      );
+
+      if (!targetUser) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found",
+        });
+      }
+
+      const isOwner =
+        currentUser.id === targetUser.id ||
+        (
+          targetUser._id &&
+          targetUser._id.toString() === currentUser._id?.toString()
+        );
+
+      const isAdmin = currentUser.role === "admin";
+
+      if (!isOwner && !isAdmin) {
+        return res.status(403).json({
+          success: false,
+          message: "You cannot access another user's profile",
+        });
+      }
+
+      next();
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: "Authorization failed",
+      });
+    }
+  };
+};
+
+
 
 app.get('/users', async (req, res) => {
     const cursor = users.find({});
@@ -263,7 +410,7 @@ app.patch("/users/:id", async (req, res) => {
 });
 
 
-app.get("/admin/users", async (req, res) => {
+app.get("/admin/users", verifyToken, async (req, res) => {
     try {
         const result = await users
             .find({})
@@ -1011,7 +1158,7 @@ app.get("/vendor/services", async (req, res) => {
     }
 });
 
-app.get("/admin/services", async (req, res) => {
+app.get("/admin/services", verifyToken, async (req, res) => {
     try {
         const result = await services
             .find({})
@@ -1118,7 +1265,7 @@ app.delete("/services/:id", async (req, res) => {
 });
 
 
-app.post("/bookings", async (req, res) => {
+app.post("/bookings",  async (req, res) => {
     try {
         const {
             customerId,
