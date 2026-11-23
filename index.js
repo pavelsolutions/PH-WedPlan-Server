@@ -162,112 +162,6 @@ const verifyToken = async (req, res, next) => {
   }
 };
 
-const verifyRole = (users, ...allowedRoles) => {
-  return async (req, res, next) => {
-    try {
-      if (!req.user?.sub) {
-        return res.status(401).json({
-          success: false,
-          message: "Unauthorized access",
-        });
-      }
-
-      const user = await users.findOne(
-        { id: req.user.sub },
-        { projection: { role: 1, isBlocked: 1 } }
-      );
-
-      if (!user || user.isBlocked) {
-        return res.status(403).json({
-          success: false,
-          message: "Account not found or blocked",
-        });
-      }
-
-      if (!allowedRoles.includes(user.role)) {
-        return res.status(403).json({
-          success: false,
-          message: "Forbidden! You don't have permission.",
-        });
-      }
-
-      req.currentUser = user;
-      next();
-
-    } catch (error) {
-      console.error("Role verification error:", error);
-
-      return res.status(500).json({
-        success: false,
-        message: "Role verification failed",
-      });
-    }
-  };
-};
-
-const verifyOwnerOrAdmin = (users) => {
-  return async (req, res, next) => {
-    try {
-      const currentUser = await users.findOne(
-        { id: req.user.sub },
-        { projection: { id: 1, role: 1, isBlocked: 1 } }
-      );
-
-      if (!currentUser || currentUser.isBlocked) {
-        return res.status(403).json({
-          success: false,
-          message: "Account not found or blocked",
-        });
-      }
-
-      const targetId = req.params.id;
-
-      const conditions = [{ id: targetId }];
-
-      if (ObjectId.isValid(targetId)) {
-        conditions.push({ _id: new ObjectId(targetId) });
-      }
-
-      const targetUser = await users.findOne(
-        { $or: conditions },
-        { projection: { id: 1 } }
-      );
-
-      if (!targetUser) {
-        return res.status(404).json({
-          success: false,
-          message: "User not found",
-        });
-      }
-
-      const isOwner =
-        currentUser.id === targetUser.id ||
-        (
-          targetUser._id &&
-          targetUser._id.toString() === currentUser._id?.toString()
-        );
-
-      const isAdmin = currentUser.role === "admin";
-
-      if (!isOwner && !isAdmin) {
-        return res.status(403).json({
-          success: false,
-          message: "You cannot access another user's profile",
-        });
-      }
-
-      next();
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        message: "Authorization failed",
-      });
-    }
-  };
-};
-
-
-
 app.get('/users', async (req, res) => {
     const cursor = users.find({});
     const result = await cursor.toArray();
@@ -893,7 +787,7 @@ app.get("/services/all", async (req, res) => {
 //   }
 // });
 
-app.post("/services", async (req, res) => {
+app.post("/services", verifyToken, async (req, res) => {
     try {
         const serviceData = req.body;
 
@@ -1265,7 +1159,7 @@ app.delete("/services/:id", async (req, res) => {
 });
 
 
-app.post("/bookings",  async (req, res) => {
+app.post("/bookings", verifyToken,  async (req, res) => {
     try {
         const {
             customerId,
@@ -1652,8 +1546,6 @@ app.get("/customer/bookings/:customerId", async (req, res) => {
         });
     }
 });
-
-
 
 
 // Helper: find customer using string or ObjectId
@@ -2167,7 +2059,7 @@ app.post("/payments/checkout-verify", async (req, res) => {
 });
 
 
-app.get("/admin/transactions", async (req, res) => {
+app.get("/admin/transactions", verifyToken, async (req, res) => {
     try {
         const limit = Math.min(
             Math.max(parseInt(req.query.limit) || 5, 1),
